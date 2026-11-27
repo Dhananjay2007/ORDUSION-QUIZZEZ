@@ -146,6 +146,7 @@
     let lastCheatId = null;
     let pollTimer = null;
     let lastRenderedQ = -1;
+    let consecutive404s = 0;
 
     async function initSession() {
       // Check if resuming existing session in sessionStorage
@@ -200,7 +201,17 @@
       if (!sessionCode || !hostToken) return;
       try {
         const res = await fetch(`/api/session/${sessionCode}/host-state?hostToken=${encodeURIComponent(hostToken)}`);
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (res.status === 404) {
+            consecutive404s++;
+            if (consecutive404s >= 3) {
+              clearInterval(pollTimer);
+              showToast('Session expired or lost (connect Upstash Redis on Vercel for persistent live state)', 'error');
+            }
+          }
+          return;
+        }
+        consecutive404s = 0;
         const state = await res.json();
 
         document.getElementById('quizTitleDisplay').textContent = state.quizTitle;
