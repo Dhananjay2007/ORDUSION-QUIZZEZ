@@ -25,7 +25,7 @@ async function generateCode() {
   do {
     code = Math.floor(100000 + Math.random() * 900000).toString();
     attempts++;
-  } while ((await store.getSession(code)) && attempts < 20);
+  } while ((await store.getSessionMeta(code)) && attempts < 20);
   return code;
 }
 
@@ -164,7 +164,7 @@ app.post('/api/session', async (req, res) => {
 
     const code = await generateCode();
     const hostToken = uuidv4();
-    const session = {
+    const meta = {
       id: uuidv4(),
       code,
       hostToken,
@@ -173,12 +173,10 @@ app.post('/api/session', async (req, res) => {
       currentQuestionIndex: -1,
       questionRevealed: false,
       questionStartedAt: null,
-      participants: {}, // participantId -> { id, name, answers, cheats, kicked, kickReason, joinedAt }
-      cheatLog: [],
       createdAt: new Date().toISOString()
     };
 
-    await store.saveSession(session);
+    await store.saveSessionMeta(meta);
     res.json({
       code,
       hostToken,
@@ -193,13 +191,14 @@ app.post('/api/session', async (req, res) => {
 // Public session info
 app.get('/api/session/:code', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    const activeCount = Object.values(session.participants).filter(p => !p.kicked).length;
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
+    const participants = await store.listParticipants(req.params.code);
+    const activeCount = Object.values(participants).filter(p => !p.kicked).length;
     res.json({
-      code: session.code,
-      quizTitle: session.quiz.title,
-      status: session.status,
+      code: meta.code,
+      quizTitle: meta.quiz.title,
+      status: meta.status,
       participantCount: activeCount
     });
   } catch (err) {
@@ -210,8 +209,8 @@ app.get('/api/session/:code', async (req, res) => {
 // QR Code for joining
 app.get('/api/session/:code/qr', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
 
     const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
     const host = req.headers['x-forwarded-host'] || req.get('host');
@@ -230,49 +229,46 @@ app.get('/api/session/:code/qr', async (req, res) => {
 // Participant joins session
 app.post('/api/session/:code/join', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Invalid session code' });
-    if (session.status === 'ended') return res.status(400).json({ error: 'This quiz session has already ended' });
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Invalid session code' });
+    if (meta.status === 'ended') return res.status(400).json({ error: 'This quiz session has already ended' });
 
     const name = (req.body.name || '').trim().slice(0, 30);
     if (!name) return res.status(400).json({ error: 'Please enter your name' });
 
-    // Prevent duplicate names in same session (unless reconnecting with existing participantId)
     const existingId = req.body.participantId;
-    if (existingId && session.participants[existingId]) {
-      const existing = session.participants[existingId];
-      if (existing.kicked) {
-        return res.status(403).json({ error: existing.kickReason || 'You were removed by the host' });
+    if (existingId) {
+      const existing = await store.getParticipant(req.params.code, existingId);
+      if (existing) {
+        if (existing.kicked) {
+          return res.status(403).json({ error: existing.kickReason || 'You were removed by the host' });
+        }
+        return res.json({
+          code: meta.code,
+          participantId: existing.id,
+          name: existing.name,
+          quizTitle: meta.quiz.title,
+          status: meta.status
+        });
       }
-      return res.json({
-        code: session.code,
-        participantId: existing.id,
-        name: existing.name,
-        quizTitle: session.quiz.title,
-        status: session.status
-      });
     }
 
     const participantId = uuidv4();
-    session.participants[participantId] = {
+    const participant = {
       id: participantId,
       name,
-      answers: {},
-      scores: {},
-      score: 0,
-      cheats: [],
       kicked: false,
       kickReason: '',
       joinedAt: new Date().toISOString()
     };
 
-    await store.saveSession(session);
+    await store.addParticipant(req.params.code, participant);
     res.json({
-      code: session.code,
+      code: meta.code,
       participantId,
       name,
-      quizTitle: session.quiz.title,
-      status: session.status
+      quizTitle: meta.quiz.title,
+      status: meta.status
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -282,11 +278,11 @@ app.post('/api/session/:code/join', async (req, res) => {
 // Participant polls state (NEVER includes correctIndex or results)
 app.get('/api/session/:code/state', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
 
     const participantId = req.query.participantId;
-    const participant = participantId ? session.participants[participantId] : null;
+    const participant = participantId ? await store.getParticipant(req.params.code, participantId) : null;
     if (!participant) return res.status(404).json({ error: 'Participant not found in session' });
 
     if (participant.kicked) {
@@ -297,22 +293,22 @@ app.get('/api/session/:code/state', async (req, res) => {
       });
     }
 
-    const idx = session.currentQuestionIndex;
-    const q = idx >= 0 && idx < session.quiz.questions.length ? session.quiz.questions[idx] : null;
-    const timeLeft = getTimeLeft(session);
-    const answered = q ? participant.answers[q.id] !== undefined : false;
+    const idx = meta.currentQuestionIndex;
+    const q = idx >= 0 && idx < meta.quiz.questions.length ? meta.quiz.questions[idx] : null;
+    const timeLeft = getTimeLeft(meta);
+    const ansRecord = q ? await store.getParticipantAnswer(req.params.code, q.id, participantId) : null;
 
     res.json({
-      status: session.status,
+      status: meta.status,
       kicked: false,
-      quizTitle: session.quiz.title,
-      questionRevealed: session.questionRevealed,
+      quizTitle: meta.quiz.title,
+      questionRevealed: meta.questionRevealed,
       currentQuestionIndex: idx,
-      totalQuestions: session.quiz.questions.length,
+      totalQuestions: meta.quiz.questions.length,
       timeLeft,
-      answered,
-      selectedAnswer: q ? participant.answers[q.id] : null,
-      question: q && session.status === 'active' ? {
+      answered: Boolean(ansRecord),
+      selectedAnswer: ansRecord ? ansRecord.answerIndex : null,
+      question: q && meta.status === 'active' ? {
         id: q.id,
         text: q.text,
         options: q.options,
@@ -324,36 +320,28 @@ app.get('/api/session/:code/state', async (req, res) => {
   }
 });
 
-// Participant submits answer (NEVER reveals if correct)
+// Participant submits answer (Atomic per-participant write, NEVER reveals correctness)
 app.post('/api/session/:code/answer', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (session.status !== 'active' || !session.questionRevealed) {
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
+    if (meta.status !== 'active' || !meta.questionRevealed) {
       return res.status(400).json({ error: 'Question is locked or not active' });
     }
 
     const { participantId, answerIndex } = req.body;
-    const participant = session.participants[participantId];
+    const participant = participantId ? await store.getParticipant(req.params.code, participantId) : null;
     if (!participant || participant.kicked) {
       return res.status(403).json({ error: 'Not allowed' });
     }
 
-    const q = session.quiz.questions[session.currentQuestionIndex];
+    const q = meta.quiz.questions[meta.currentQuestionIndex];
     if (!q) return res.status(400).json({ error: 'No active question' });
 
-    if (participant.answers[q.id] !== undefined) {
-      return res.json({ confirmed: true, alreadyAnswered: true });
-    }
-
-    // Check timer with 2s grace period for network latency
-    const elapsedMs = Date.now() - (session.questionStartedAt || Date.now());
+    const elapsedMs = Date.now() - (meta.questionStartedAt || Date.now());
     if (elapsedMs > (q.timer + 2) * 1000) {
       return res.status(400).json({ error: 'Time expired' });
     }
-
-    participant.answers[q.id] = Number(answerIndex);
-    if (!participant.scores) participant.scores = {};
 
     const basePoints = Number(q.points) > 0 ? Number(q.points) : 1000;
     let earned = 0;
@@ -362,26 +350,31 @@ app.post('/api/session/:code/answer', async (req, res) => {
       const ratio = Math.max(0, Math.min(1, (totalMs - elapsedMs) / totalMs));
       earned = Math.round(basePoints * (0.5 + 0.5 * ratio));
     }
-    participant.scores[q.id] = earned;
-    participant.score = Object.values(participant.scores).reduce((sum, v) => sum + v, 0);
 
-    await store.saveSession(session);
+    const inserted = await store.submitAnswer(req.params.code, q.id, participantId, {
+      answerIndex: Number(answerIndex),
+      score: earned,
+      answeredAt: Date.now()
+    });
 
-    // Return confirmation ONLY — never reveal correctness
+    if (!inserted) {
+      return res.json({ confirmed: true, alreadyAnswered: true });
+    }
+
     res.json({ confirmed: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Participant anti-cheat report
+// Participant anti-cheat report (Atomic list push)
 app.post('/api/session/:code/cheat', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
 
     const { participantId, type, detail } = req.body;
-    const participant = session.participants[participantId];
+    const participant = participantId ? await store.getParticipant(req.params.code, participantId) : null;
     if (!participant) return res.status(404).json({ error: 'Participant not found' });
 
     const record = {
@@ -393,12 +386,8 @@ app.post('/api/session/:code/cheat', async (req, res) => {
       time: new Date().toISOString()
     };
 
-    participant.cheats.push(record);
-    session.cheatLog.unshift(record);
-    if (session.cheatLog.length > 200) session.cheatLog.length = 200;
-
-    await store.saveSession(session);
-    res.json({ logged: true, totalCheats: participant.cheats.length });
+    await store.addCheat(req.params.code, record);
+    res.json({ logged: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -407,50 +396,69 @@ app.post('/api/session/:code/cheat', async (req, res) => {
 // Host polls full state
 app.get('/api/session/:code/host-state', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (req.query.hostToken !== session.hostToken) {
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
+    if (req.query.hostToken !== meta.hostToken) {
       return res.status(403).json({ error: 'Unauthorized host token' });
     }
 
-    const idx = session.currentQuestionIndex;
-    const q = idx >= 0 && idx < session.quiz.questions.length ? session.quiz.questions[idx] : null;
+    const idx = meta.currentQuestionIndex;
+    const q = idx >= 0 && idx < meta.quiz.questions.length ? meta.quiz.questions[idx] : null;
+    const qIds = meta.quiz.questions.map(item => item.id);
+
+    const [rawParticipants, allAnswers, cheatLog] = await Promise.all([
+      store.listParticipants(req.params.code),
+      store.getAllSessionAnswers(req.params.code, qIds),
+      store.getCheats(req.params.code, 50)
+    ]);
+
+    const cheatCountsByPid = {};
+    for (const c of cheatLog) {
+      cheatCountsByPid[c.participantId] = (cheatCountsByPid[c.participantId] || 0) + 1;
+    }
+
     const answerCounts = { 0: 0, 1: 0, 2: 0, 3: 0 };
     let responseCount = 0;
 
-    const participants = Object.values(session.participants)
+    const participants = Object.values(rawParticipants)
       .filter(p => !p.kicked)
       .map(p => {
-        const answeredCurrent = q ? p.answers[q.id] !== undefined : false;
-        if (q && answeredCurrent) {
-          responseCount++;
-          const ans = p.answers[q.id];
-          if (answerCounts[ans] !== undefined) answerCounts[ans]++;
-        }
+        let score = 0;
         let correctCount = 0;
-        for (const [qId, ansIdx] of Object.entries(p.answers || {})) {
-          const item = session.quiz.questions.find(x => x.id === qId);
-          if (item && item.correctIndex === ansIdx) correctCount++;
+        for (const item of meta.quiz.questions) {
+          const ansRec = allAnswers[item.id] ? allAnswers[item.id][p.id] : null;
+          if (ansRec) {
+            score += ansRec.score || 0;
+            if (ansRec.answerIndex === item.correctIndex) correctCount++;
+          }
+        }
+        const currentAns = q && allAnswers[q.id] ? allAnswers[q.id][p.id] : null;
+        const answeredCurrent = Boolean(currentAns);
+        if (answeredCurrent) {
+          responseCount++;
+          if (answerCounts[currentAns.answerIndex] !== undefined) {
+            answerCounts[currentAns.answerIndex]++;
+          }
         }
         return {
           id: p.id,
           name: p.name,
-          score: p.score || 0,
+          score,
           correctCount,
           answeredCurrent,
-          cheats: p.cheats.length
+          cheats: cheatCountsByPid[p.id] || 0
         };
       })
       .sort((a, b) => b.score - a.score || b.correctCount - a.correctCount);
 
     res.json({
-      code: session.code,
-      quizTitle: session.quiz.title,
-      status: session.status,
+      code: meta.code,
+      quizTitle: meta.quiz.title,
+      status: meta.status,
       currentQuestionIndex: idx,
-      totalQuestions: session.quiz.questions.length,
-      questionRevealed: session.questionRevealed,
-      timeLeft: getTimeLeft(session),
+      totalQuestions: meta.quiz.questions.length,
+      questionRevealed: meta.questionRevealed,
+      timeLeft: getTimeLeft(meta),
       question: q ? {
         id: q.id,
         text: q.text,
@@ -463,7 +471,7 @@ app.get('/api/session/:code/host-state', async (req, res) => {
       participantCount: participants.length,
       answerCounts,
       responseCount,
-      cheatLog: session.cheatLog.slice(0, 50)
+      cheatLog
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -473,31 +481,31 @@ app.get('/api/session/:code/host-state', async (req, res) => {
 // Host advances to next question
 app.post('/api/session/:code/next', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (req.body.hostToken !== session.hostToken) {
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
+    if (req.body.hostToken !== meta.hostToken) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    if (session.status === 'waiting') session.status = 'active';
-    session.currentQuestionIndex++;
+    if (meta.status === 'waiting') meta.status = 'active';
+    meta.currentQuestionIndex++;
 
-    if (session.currentQuestionIndex >= session.quiz.questions.length) {
-      session.status = 'ended';
-      session.questionRevealed = false;
-      await store.saveSession(session);
+    if (meta.currentQuestionIndex >= meta.quiz.questions.length) {
+      meta.status = 'ended';
+      meta.questionRevealed = false;
+      await store.saveSessionMeta(meta);
       return res.json({ status: 'ended' });
     }
 
-    session.questionRevealed = true;
-    session.questionStartedAt = Date.now();
-    await store.saveSession(session);
+    meta.questionRevealed = true;
+    meta.questionStartedAt = Date.now();
+    await store.saveSessionMeta(meta);
 
-    const q = session.quiz.questions[session.currentQuestionIndex];
+    const q = meta.quiz.questions[meta.currentQuestionIndex];
     res.json({
-      status: session.status,
-      index: session.currentQuestionIndex,
-      total: session.quiz.questions.length,
+      status: meta.status,
+      index: meta.currentQuestionIndex,
+      total: meta.quiz.questions.length,
       question: q
     });
   } catch (err) {
@@ -508,14 +516,14 @@ app.post('/api/session/:code/next', async (req, res) => {
 // Host locks current question
 app.post('/api/session/:code/lock', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (req.body.hostToken !== session.hostToken) {
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
+    if (req.body.hostToken !== meta.hostToken) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    session.questionRevealed = false;
-    await store.saveSession(session);
+    meta.questionRevealed = false;
+    await store.saveSessionMeta(meta);
     res.json({ locked: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -525,15 +533,15 @@ app.post('/api/session/:code/lock', async (req, res) => {
 // Host ends session
 app.post('/api/session/:code/end', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (req.body.hostToken !== session.hostToken) {
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
+    if (req.body.hostToken !== meta.hostToken) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    session.status = 'ended';
-    session.questionRevealed = false;
-    await store.saveSession(session);
+    meta.status = 'ended';
+    meta.questionRevealed = false;
+    await store.saveSessionMeta(meta);
     res.json({ status: 'ended' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -543,17 +551,17 @@ app.post('/api/session/:code/end', async (req, res) => {
 // Host kicks participant
 app.post('/api/session/:code/kick', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (req.body.hostToken !== session.hostToken) {
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
+    if (req.body.hostToken !== meta.hostToken) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    const p = session.participants[req.body.participantId];
+    const p = await store.getParticipant(req.params.code, req.body.participantId);
     if (p) {
       p.kicked = true;
-      p.kickReason = req.body.reason || 'Removed by host due to policy violation';
-      await store.saveSession(session);
+      p.kickReason = req.body.reason || 'Removed by host due to anti-cheat violation';
+      await store.addParticipant(req.params.code, p);
     }
     res.json({ kicked: true });
   } catch (err) {
@@ -564,35 +572,53 @@ app.post('/api/session/:code/kick', async (req, res) => {
 // Host-only Results
 app.get('/api/session/:code/results', async (req, res) => {
   try {
-    const session = await store.getSession(req.params.code);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (req.query.hostToken !== session.hostToken) {
+    const meta = await store.getSessionMeta(req.params.code);
+    if (!meta) return res.status(404).json({ error: 'Session not found' });
+    if (req.query.hostToken !== meta.hostToken) {
       return res.status(403).json({ error: 'Results are only visible to the host' });
     }
 
-    const total = session.quiz.questions.length;
-    const maxScore = session.quiz.questions.reduce((sum, q) => sum + (Number(q.points) > 0 ? Number(q.points) : 1000), 0);
-    const results = Object.values(session.participants).map(p => {
+    const total = meta.quiz.questions.length;
+    const maxScore = meta.quiz.questions.reduce((sum, q) => sum + (Number(q.points) > 0 ? Number(q.points) : 1000), 0);
+    const qIds = meta.quiz.questions.map(item => item.id);
+
+    const [rawParticipants, allAnswers, allCheats] = await Promise.all([
+      store.listParticipants(req.params.code),
+      store.getAllSessionAnswers(req.params.code, qIds),
+      store.getCheats(req.params.code, 200)
+    ]);
+
+    const cheatsByPid = {};
+    for (const c of allCheats) {
+      if (!cheatsByPid[c.participantId]) cheatsByPid[c.participantId] = [];
+      cheatsByPid[c.participantId].push(c);
+    }
+
+    const results = Object.values(rawParticipants).map(p => {
       let correct = 0;
-      for (const [qId, ansIdx] of Object.entries(p.answers)) {
-        const q = session.quiz.questions.find(item => item.id === qId);
-        if (q && q.correctIndex === ansIdx) correct++;
+      let score = 0;
+      for (const q of meta.quiz.questions) {
+        const ansRec = allAnswers[q.id] ? allAnswers[q.id][p.id] : null;
+        if (ansRec) {
+          score += ansRec.score || 0;
+          if (ansRec.answerIndex === q.correctIndex) correct++;
+        }
       }
       return {
         id: p.id,
         name: p.name,
-        score: p.score || 0,
+        score,
         maxScore,
         correct,
         total,
         percentage: total > 0 ? Math.round((correct / total) * 100) : 0,
-        cheats: p.cheats,
+        cheats: cheatsByPid[p.id] || [],
         kicked: p.kicked
       };
     });
 
     results.sort((a, b) => b.score - a.score || b.correct - a.correct);
-    res.json({ quiz: session.quiz.title, results });
+    res.json({ quiz: meta.quiz.title, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
