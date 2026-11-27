@@ -19,7 +19,7 @@
       <span class="live-dot"></span> LIVE <span id="navCode" style="margin-left:4px;"></span>
     </div>
     <div class="nav-actions">
-      <button class="btn btn-danger btn-sm" onclick="endSession()">
+      <button class="btn btn-danger btn-sm" id="endSessionBtn" onclick="endSession()">
         <span class="material-icons-round">stop</span> End Session
       </button>
     </div>
@@ -66,7 +66,7 @@
       <div class="live-main">
         <div class="question-display-card">
           <div class="question-progress">
-            <span>Question <strong id="qNum">0</strong> of <strong id="qTotal">0</strong></span>
+            <span>Question <strong id="qNum">0</strong> of <strong id="qTotal">0</strong> · <strong id="qPointsBadge">1000 pts</strong></span>
             <div class="progress-bar">
               <div class="progress-fill" id="progressFill"></div>
             </div>
@@ -77,13 +77,19 @@
             <div class="options-display" id="optionsDisplay"></div>
           </div>
 
-          <div class="question-controls">
+          <div class="question-controls" style="flex-wrap:wrap;gap:12px;">
             <div class="timer-display" id="hostTimerWrap">
               <span class="material-icons-round">timer</span>
               <span id="timerDisplay">--</span>s
             </div>
-            <div class="control-buttons">
-              <button class="btn btn-outline" onclick="lockQuestion()" id="lockBtn">
+            <div class="control-buttons" style="flex-wrap:wrap;">
+              <button class="btn btn-outline btn-sm" onclick="toggleShowAnswer()" id="toggleAnswerBtn">
+                <span class="material-icons-round">visibility</span> Show Answer
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="toggleAutoNext()" id="autoNextBtn">
+                <span class="material-icons-round">autorenew</span> Auto Next: OFF
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="lockQuestion()" id="lockBtn">
                 <span class="material-icons-round">lock</span> Lock Answers
               </button>
               <button class="btn btn-primary" onclick="nextQuestion()" id="nextBtn">
@@ -100,11 +106,13 @@
       </div>
 
       <div class="live-sidebar">
+        <!-- Live Leaderboard -->
         <div class="sidebar-card">
-          <h3><span class="material-icons-round">groups</span> Participants (<span id="liveParticipantCount">0</span>)</h3>
+          <h3><span class="material-icons-round" style="color:var(--warning);">leaderboard</span> Live Leaderboard (<span id="liveParticipantCount">0</span>)</h3>
           <div id="liveParticipantsList" class="participants-list-compact"></div>
         </div>
 
+        <!-- Anti-Cheat Alerts -->
         <div class="sidebar-card cheat-card" id="cheatSidebarCard">
           <h3><span class="material-icons-round">security</span> Anti-Cheat Alerts</h3>
           <div id="cheatAlerts" class="cheat-alerts">
@@ -123,7 +131,7 @@
     <div class="results-card">
       <div class="results-header">
         <span class="material-icons-round results-icon">emoji_events</span>
-        <h1>Quiz Results (Host Only)</h1>
+        <h1>Final Leaderboard (Host Only)</h1>
         <p id="resultsQuizTitle" class="subtitle"></p>
       </div>
       <div id="resultsTable" class="results-table-wrapper"></div>
@@ -148,8 +156,13 @@
     let lastRenderedQ = -1;
     let consecutive404s = 0;
 
+    let currentQuestionData = null;
+    let showAnswerInHost = false;
+    let autoNextEnabled = false;
+    let autoAdvancedIndex = -1;
+    let autoNextTimeout = null;
+
     async function initSession() {
-      // Check if resuming existing session in sessionStorage
       if (sessionCode) {
         const stored = JSON.parse(sessionStorage.getItem(`hostSession:${sessionCode}`) || '{}');
         if (stored.hostToken) hostToken = stored.hostToken;
@@ -184,7 +197,6 @@
       document.getElementById('navCode').textContent = `#${sessionCode}`;
       document.getElementById('joinUrlText').textContent = `${window.location.host}/join.html`;
 
-      // Load QR code
       try {
         const qrRes = await fetch(`/api/session/${sessionCode}/qr`);
         const qr = await qrRes.json();
@@ -206,7 +218,7 @@
             consecutive404s++;
             if (consecutive404s >= 3) {
               clearInterval(pollTimer);
-              showToast('Session expired or lost (connect Upstash Redis on Vercel for persistent live state)', 'error');
+              showToast('Session expired or lost', 'error');
             }
           }
           return;
@@ -218,7 +230,6 @@
         document.getElementById('qTotal').textContent = state.totalQuestions;
         document.title = `LIVE (${sessionCode}): ${state.quizTitle}`;
 
-        // Update participant counts
         document.getElementById('participantCount').textContent = state.participantCount;
         document.getElementById('liveParticipantCount').textContent = state.participantCount;
         document.getElementById('totalParticipants').textContent = state.participantCount;
@@ -229,6 +240,8 @@
 
         if (state.status === 'ended') {
           clearInterval(pollTimer);
+          clearTimeout(autoNextTimeout);
+          document.getElementById('endSessionBtn').classList.add('hidden');
           showView('resultsScreen');
           loadResults();
           return;
@@ -239,17 +252,33 @@
           return;
         }
 
-        // Active quiz
         showView('liveControl');
         if (state.question) {
           if (lastRenderedQ !== state.currentQuestionIndex) {
             lastRenderedQ = state.currentQuestionIndex;
+            showAnswerInHost = false;
+            updateToggleAnswerBtn();
             renderQuestion(state);
           }
+
           document.getElementById('timerDisplay').textContent = state.questionRevealed ? state.timeLeft : '🔒';
           document.getElementById('lockBtn').disabled = !state.questionRevealed;
           document.getElementById('responseCount').textContent = state.responseCount;
           updateAnswerBars(state.answerCounts, state.responseCount);
+
+          // Auto Next Question ONLY after timer reaches 0
+          if (
+            autoNextEnabled &&
+            state.questionRevealed &&
+            state.timeLeft === 0 &&
+            autoAdvancedIndex !== state.currentQuestionIndex
+          ) {
+            autoAdvancedIndex = state.currentQuestionIndex;
+            showToast('Time up! Switching to next question...');
+            autoNextTimeout = setTimeout(() => {
+              if (autoNextEnabled) nextQuestion();
+            }, 1200);
+          }
         }
       } catch (e) {
         // retry next tick
@@ -267,32 +296,31 @@
         ? list.map(p => `<span class="participant-chip"><span class="material-icons-round">person</span> ${escapeHtml(p.name)}</span>`).join('')
         : '<p class="no-participants">Waiting for participants to join...</p>';
 
-      document.getElementById('liveParticipantsList').innerHTML = list.map(p => `
-        <div class="participant-row ${p.cheats > 0 ? 'flagged' : ''}">
-          <span class="material-icons-round">person</span>
-          <span class="p-name">${escapeHtml(p.name)}</span>
-          ${p.cheats > 0 ? `<span class="cheat-count" title="${p.cheats} cheat alerts">⚠ ${p.cheats}</span>` : ''}
-          ${p.answeredCurrent ? '<span class="material-icons-round answered-icon" title="Answered">check_circle</span>' : ''}
-          <button class="btn-icon danger" style="width:26px;height:26px;" title="Remove participant" onclick="kickParticipant('${p.id}', '${escapeHtml(p.name)}')">
-            <span class="material-icons-round" style="font-size:16px;">person_remove</span>
-          </button>
-        </div>
-      `).join('');
+      document.getElementById('liveParticipantsList').innerHTML = list.length
+        ? list.map((p, idx) => `
+          <div class="participant-row ${p.cheats > 0 ? 'flagged' : ''}">
+            <span class="lb-rank">${idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`}</span>
+            <span class="p-name">${escapeHtml(p.name)}</span>
+            <span class="lb-score">${p.score || 0} pts</span>
+            ${p.cheats > 0 ? `<span class="cheat-count" title="${p.cheats} cheat alerts">⚠ ${p.cheats}</span>` : ''}
+            ${p.answeredCurrent ? '<span class="material-icons-round answered-icon" title="Answered">check_circle</span>' : ''}
+            <button class="btn-icon danger" style="width:24px;height:24px;" title="Remove participant" onclick="kickParticipant('${p.id}', '${escapeHtml(p.name)}')">
+              <span class="material-icons-round" style="font-size:15px;">person_remove</span>
+            </button>
+          </div>
+        `).join('')
+        : '<p class="no-participants" style="padding:8px;">No participants</p>';
     }
 
     function renderQuestion(state) {
       const q = state.question;
+      currentQuestionData = q;
       document.getElementById('qNum').textContent = state.currentQuestionIndex + 1;
+      document.getElementById('qPointsBadge').textContent = `${q.points || 1000} pts`;
       document.getElementById('questionText').textContent = q.text;
       document.getElementById('progressFill').style.width = `${((state.currentQuestionIndex + 1) / state.totalQuestions) * 100}%`;
 
-      document.getElementById('optionsDisplay').innerHTML = q.options.map((opt, i) => opt ? `
-        <div class="option-display ${i === q.correctIndex ? 'correct-option' : ''}">
-          <span class="opt-letter">${'ABCD'[i]}</span>
-          <span>${escapeHtml(opt)}</span>
-          ${i === q.correctIndex ? '<span class="material-icons-round correct-mark">check_circle</span>' : ''}
-        </div>
-      ` : '').join('');
+      renderOptionsDisplay();
 
       document.getElementById('answerBars').innerHTML = q.options.map((opt, i) => opt ? `
         <div class="answer-bar-row">
@@ -307,6 +335,58 @@
       document.getElementById('nextBtn').innerHTML = (state.currentQuestionIndex + 1 >= state.totalQuestions)
         ? '<span class="material-icons-round">flag</span> Finish Quiz'
         : '<span class="material-icons-round">skip_next</span> Next Question';
+    }
+
+    function renderOptionsDisplay() {
+      if (!currentQuestionData) return;
+      const q = currentQuestionData;
+      document.getElementById('optionsDisplay').innerHTML = q.options.map((opt, i) => {
+        if (!opt) return '';
+        const isCorrectShown = showAnswerInHost && i === q.correctIndex;
+        return `
+          <div class="option-display ${isCorrectShown ? 'correct-option' : ''}">
+            <span class="opt-letter">${'ABCD'[i]}</span>
+            <span>${escapeHtml(opt)}</span>
+            ${isCorrectShown ? '<span class="material-icons-round correct-mark">check_circle</span>' : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function toggleShowAnswer() {
+      showAnswerInHost = !showAnswerInHost;
+      updateToggleAnswerBtn();
+      renderOptionsDisplay();
+    }
+
+    function updateToggleAnswerBtn() {
+      const btn = document.getElementById('toggleAnswerBtn');
+      if (showAnswerInHost) {
+        btn.classList.add('btn-primary');
+        btn.classList.remove('btn-outline');
+        btn.innerHTML = '<span class="material-icons-round">visibility_off</span> Hide Answer';
+      } else {
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-outline');
+        btn.innerHTML = '<span class="material-icons-round">visibility</span> Show Answer';
+      }
+    }
+
+    function toggleAutoNext() {
+      autoNextEnabled = !autoNextEnabled;
+      const btn = document.getElementById('autoNextBtn');
+      if (autoNextEnabled) {
+        btn.classList.add('btn-primary');
+        btn.classList.remove('btn-outline');
+        btn.innerHTML = '<span class="material-icons-round">autorenew</span> Auto Next: ON';
+        showToast('Auto Next enabled (switches when timer hits 0s)');
+      } else {
+        clearTimeout(autoNextTimeout);
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-outline');
+        btn.innerHTML = '<span class="material-icons-round">autorenew</span> Auto Next: OFF';
+        showToast('Auto Next disabled');
+      }
     }
 
     function updateAnswerBars(counts, totalResp) {
@@ -343,6 +423,7 @@
     }
 
     async function nextQuestion() {
+      clearTimeout(autoNextTimeout);
       await fetch(`/api/session/${sessionCode}/next`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -373,13 +454,36 @@
     }
 
     async function endSession() {
-      if (!confirm('End this quiz session now?')) return;
-      await fetch(`/api/session/${sessionCode}/end`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hostToken })
-      });
-      pollHostState();
+      if (!sessionCode || !hostToken) {
+        window.location.href = '/host.html';
+        return;
+      }
+      const btn = document.getElementById('endSessionBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Ending...';
+
+      clearInterval(pollTimer);
+      clearTimeout(autoNextTimeout);
+
+      try {
+        const res = await fetch(`/api/session/${sessionCode}/end`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hostToken })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'Failed to end session');
+        }
+        btn.classList.add('hidden');
+        showView('resultsScreen');
+        await loadResults();
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-icons-round">stop</span> End Session';
+        pollTimer = setInterval(pollHostState, 1000);
+      }
     }
 
     async function loadResults() {
@@ -398,8 +502,9 @@
             <thead>
               <tr>
                 <th>Rank</th>
-                <th>Participant</th>
+                <th>Participant / Team</th>
                 <th>Score</th>
+                <th>Correct</th>
                 <th>Accuracy</th>
                 <th>Anti-Cheat</th>
               </tr>
@@ -409,6 +514,7 @@
                 <tr class="${r.cheats.length > 0 ? 'flagged-row' : ''}">
                   <td class="rank-cell">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
                   <td><strong>${escapeHtml(r.name)}</strong> ${r.kicked ? '<span class="cheat-badge">Removed</span>' : ''}</td>
+                  <td><strong>${r.score || 0} pts</strong></td>
                   <td>${r.correct} / ${r.total}</td>
                   <td>
                     <div class="score-bar-mini">
@@ -433,9 +539,9 @@
       fetch(`/api/session/${sessionCode}/results?hostToken=${encodeURIComponent(hostToken)}`)
         .then(r => r.json())
         .then(data => {
-          let csv = 'Rank,Name,Correct,Total,Percentage,Cheats,Status\n';
+          let csv = 'Rank,Name,Score,Correct,Total,Percentage,Cheats,Status\n';
           data.results.forEach((r, i) => {
-            csv += `${i + 1},"${r.name.replace(/"/g, '""')}",${r.correct},${r.total},${r.percentage}%,${r.cheats.length},${r.kicked ? 'Removed' : 'Completed'}\n`;
+            csv += `${i + 1},"${r.name.replace(/"/g, '""')}",${r.score || 0},${r.correct},${r.total},${r.percentage}%,${r.cheats.length},${r.kicked ? 'Removed' : 'Completed'}\n`;
           });
           const blob = new Blob([csv], { type: 'text/csv' });
           const url = URL.createObjectURL(blob);

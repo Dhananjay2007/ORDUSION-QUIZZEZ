@@ -1600,3 +1600,20 @@ input:focus, textarea:focus, select:focus {
   -ms-user-select: none;
   user-select: none;
 }
+
+.lb-rank {
+  font-weight: 700;
+  font-size: 0.8125rem;
+  min-width: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.lb-score {
+  font-weight: 700;
+  font-size: 0.8125rem;
+  color: var(--primary);
+  background: var(--primary-light);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}

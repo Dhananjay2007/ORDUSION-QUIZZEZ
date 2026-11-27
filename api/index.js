@@ -258,6 +258,8 @@ app.post('/api/session/:code/join', async (req, res) => {
       id: participantId,
       name,
       answers: {},
+      scores: {},
+      score: 0,
       cheats: [],
       kicked: false,
       kickReason: '',
@@ -351,6 +353,18 @@ app.post('/api/session/:code/answer', async (req, res) => {
     }
 
     participant.answers[q.id] = Number(answerIndex);
+    if (!participant.scores) participant.scores = {};
+
+    const basePoints = Number(q.points) > 0 ? Number(q.points) : 1000;
+    let earned = 0;
+    if (Number(answerIndex) === q.correctIndex) {
+      const totalMs = Math.max(1000, (q.timer || 30) * 1000);
+      const ratio = Math.max(0, Math.min(1, (totalMs - elapsedMs) / totalMs));
+      earned = Math.round(basePoints * (0.5 + 0.5 * ratio));
+    }
+    participant.scores[q.id] = earned;
+    participant.score = Object.values(participant.scores).reduce((sum, v) => sum + v, 0);
+
     await store.saveSession(session);
 
     // Return confirmation ONLY — never reveal correctness
@@ -413,13 +427,21 @@ app.get('/api/session/:code/host-state', async (req, res) => {
           const ans = p.answers[q.id];
           if (answerCounts[ans] !== undefined) answerCounts[ans]++;
         }
+        let correctCount = 0;
+        for (const [qId, ansIdx] of Object.entries(p.answers || {})) {
+          const item = session.quiz.questions.find(x => x.id === qId);
+          if (item && item.correctIndex === ansIdx) correctCount++;
+        }
         return {
           id: p.id,
           name: p.name,
+          score: p.score || 0,
+          correctCount,
           answeredCurrent,
           cheats: p.cheats.length
         };
-      });
+      })
+      .sort((a, b) => b.score - a.score || b.correctCount - a.correctCount);
 
     res.json({
       code: session.code,
@@ -434,7 +456,8 @@ app.get('/api/session/:code/host-state', async (req, res) => {
         text: q.text,
         options: q.options,
         correctIndex: q.correctIndex,
-        timer: q.timer
+        timer: q.timer,
+        points: Number(q.points) > 0 ? Number(q.points) : 1000
       } : null,
       participants,
       participantCount: participants.length,
@@ -548,6 +571,7 @@ app.get('/api/session/:code/results', async (req, res) => {
     }
 
     const total = session.quiz.questions.length;
+    const maxScore = session.quiz.questions.reduce((sum, q) => sum + (Number(q.points) > 0 ? Number(q.points) : 1000), 0);
     const results = Object.values(session.participants).map(p => {
       let correct = 0;
       for (const [qId, ansIdx] of Object.entries(p.answers)) {
@@ -557,6 +581,8 @@ app.get('/api/session/:code/results', async (req, res) => {
       return {
         id: p.id,
         name: p.name,
+        score: p.score || 0,
+        maxScore,
         correct,
         total,
         percentage: total > 0 ? Math.round((correct / total) * 100) : 0,
@@ -565,7 +591,7 @@ app.get('/api/session/:code/results', async (req, res) => {
       };
     });
 
-    results.sort((a, b) => b.correct - a.correct);
+    results.sort((a, b) => b.score - a.score || b.correct - a.correct);
     res.json({ quiz: session.quiz.title, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -586,6 +612,7 @@ function parsePlainText(text) {
     const options = [];
     let correctIndex = 0;
     let timer = 30;
+    let points = 1000;
 
     for (const line of lines) {
       if (/^(Q\d*[:.\s]|Question\s*\d*[:.\s]|\d+[.)]\s)/i.test(line)) {
@@ -599,6 +626,9 @@ function parsePlainText(text) {
       } else if (/^(Timer|Time)[:.\s]/i.test(line)) {
         const t = parseInt(line.replace(/^(Timer|Time)[:.\s]*/i, ''), 10);
         if (t >= 5) timer = t;
+      } else if (/^(Points|Pts|Score)[:.\s]/i.test(line)) {
+        const pts = parseInt(line.replace(/^(Points|Pts|Score)[:.\s]*/i, ''), 10);
+        if (pts >= 50) points = pts;
       } else if (!questionText) {
         questionText = line;
       } else if (options.length < 4) {
@@ -613,7 +643,8 @@ function parsePlainText(text) {
         text: questionText,
         options: options.slice(0, 4),
         correctIndex: Math.min(correctIndex, 3),
-        timer
+        timer,
+        points
       });
     }
   }
@@ -637,6 +668,7 @@ function parseSpreadsheet(rows) {
     ];
     const correct = String(row[5] || 'A').trim().toUpperCase();
     const timer = Math.max(5, parseInt(row[6], 10) || 30);
+    const points = Math.max(50, parseInt(row[7], 10) || 1000);
 
     let correctIndex = 'ABCD'.indexOf(correct.charAt(0));
     if (correctIndex < 0) correctIndex = 0;
@@ -647,7 +679,8 @@ function parseSpreadsheet(rows) {
         text: questionText,
         options,
         correctIndex,
-        timer
+        timer,
+        points
       });
     }
   }

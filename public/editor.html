@@ -110,6 +110,10 @@ Timer: 30</pre>
             <label>Timer (seconds)</label>
             <input type="number" id="timerSecs" value="30" min="5" max="300" step="5">
           </div>
+          <div class="form-group">
+            <label>Points</label>
+            <input type="number" id="questionPoints" value="1000" min="50" max="10000" step="50">
+          </div>
         </div>
         <div style="display:flex;gap:10px;align-items:center;">
           <button class="btn btn-primary" id="saveQuestionBtn" onclick="saveQuestion()">
@@ -161,6 +165,7 @@ Timer: 30</pre>
             <span class="question-num">${i + 1}</span>
             <span class="question-text">${escapeHtml(q.text)}</span>
             <div class="question-item-actions">
+              <span class="timer-badge"><span class="material-icons-round">stars</span> ${q.points || 1000} pts</span>
               <span class="timer-badge"><span class="material-icons-round">timer</span> ${q.timer}s</span>
               <button class="btn-icon" title="Edit" onclick="editQuestion(${i})">
                 <span class="material-icons-round">edit</span>
@@ -202,6 +207,7 @@ Timer: 30</pre>
       ];
       const correctIndex = parseInt(document.getElementById('correctAnswer').value, 10);
       const timer = Math.max(5, parseInt(document.getElementById('timerSecs').value, 10) || 30);
+      const points = Math.max(50, parseInt(document.getElementById('questionPoints').value, 10) || 1000);
 
       if (!text) { showToast('Please enter question text', 'error'); return; }
       if (options.filter(Boolean).length < 2) { showToast('At least 2 options required', 'error'); return; }
@@ -210,14 +216,14 @@ Timer: 30</pre>
       if (editingIndex !== null) {
         quiz.questions[editingIndex] = {
           ...quiz.questions[editingIndex],
-          text, options, correctIndex, timer
+          text, options, correctIndex, timer, points
         };
         editingIndex = null;
         showToast('Question updated!');
       } else {
         quiz.questions.push({
           id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-          text, options, correctIndex, timer
+          text, options, correctIndex, timer, points
         });
         showToast('Question added!');
       }
@@ -236,6 +242,7 @@ Timer: 30</pre>
       document.getElementById('optD').value = q.options[3] || '';
       document.getElementById('correctAnswer').value = q.correctIndex;
       document.getElementById('timerSecs').value = q.timer;
+      document.getElementById('questionPoints').value = q.points || 1000;
 
       document.getElementById('formHeading').innerHTML = `<span class="material-icons-round">edit</span> Editing Question ${index + 1}`;
       document.getElementById('saveQuestionBtn').innerHTML = '<span class="material-icons-round">save</span> Update Question';
@@ -254,6 +261,7 @@ Timer: 30</pre>
       ['optA', 'optB', 'optC', 'optD'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('correctAnswer').value = '0';
       document.getElementById('timerSecs').value = '30';
+      document.getElementById('questionPoints').value = '1000';
       document.getElementById('formHeading').innerHTML = '<span class="material-icons-round">edit_note</span> Add Question Manually';
       document.getElementById('saveQuestionBtn').innerHTML = '<span class="material-icons-round">add</span> Add Question';
       document.getElementById('cancelEditBtn').classList.add('hidden');
