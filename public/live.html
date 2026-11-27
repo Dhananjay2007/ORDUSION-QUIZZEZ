@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Session - ORDUSION-QUIZZEZ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="page-live">
+  <nav class="top-bar">
+    <a href="/host.html" class="logo">
+      <span class="logo-icon material-icons-round">quiz</span>
+      <span class="logo-text">ORDUSION<span class="logo-accent">-QUIZZEZ</span></span>
+    </a>
+    <div class="live-badge">
+      <span class="live-dot"></span> LIVE <span id="navCode" style="margin-left:4px;"></span>
+    </div>
+    <div class="nav-actions">
+      <button class="btn btn-danger btn-sm" onclick="endSession()">
+        <span class="material-icons-round">stop</span> End Session
+      </button>
+    </div>
+  </nav>
+
+  <!-- Waiting Room -->
+  <div id="waitingRoom" class="live-container">
+    <div class="waiting-card">
+      <h1 id="quizTitleDisplay">Creating Session...</h1>
+      <p class="subtitle">Share the code or QR below so participants can join</p>
+
+      <div class="join-info-grid">
+        <div class="join-info-card">
+          <h3>NUMERIC CODE</h3>
+          <div class="big-code" id="sessionCode">------</div>
+          <p class="hint">Participants enter this at <strong id="joinUrlText">/join.html</strong></p>
+        </div>
+        <div class="join-info-card">
+          <h3>QR CODE</h3>
+          <div id="qrCode" class="qr-container">
+            <div class="spinner dark"></div>
+          </div>
+          <p class="hint">Scan with phone camera to join instantly</p>
+        </div>
+      </div>
+
+      <div class="participants-waiting">
+        <h3><span class="material-icons-round">groups</span> Joined Participants (<span id="participantCount">0</span>)</h3>
+        <div id="participantsList" class="participants-chips">
+          <p class="no-participants">Waiting for participants to join...</p>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-lg" id="startBtn" onclick="nextQuestion()" disabled>
+        <span class="material-icons-round">play_arrow</span>
+        Start Quiz
+      </button>
+    </div>
+  </div>
+
+  <!-- Live Quiz Control -->
+  <div id="liveControl" class="live-container hidden">
+    <div class="live-grid">
+      <div class="live-main">
+        <div class="question-display-card">
+          <div class="question-progress">
+            <span>Question <strong id="qNum">0</strong> of <strong id="qTotal">0</strong></span>
+            <div class="progress-bar">
+              <div class="progress-fill" id="progressFill"></div>
+            </div>
+          </div>
+
+          <div class="question-content">
+            <h2 id="questionText">-</h2>
+            <div class="options-display" id="optionsDisplay"></div>
+          </div>
+
+          <div class="question-controls">
+            <div class="timer-display" id="hostTimerWrap">
+              <span class="material-icons-round">timer</span>
+              <span id="timerDisplay">--</span>s
+            </div>
+            <div class="control-buttons">
+              <button class="btn btn-outline" onclick="lockQuestion()" id="lockBtn">
+                <span class="material-icons-round">lock</span> Lock Answers
+              </button>
+              <button class="btn btn-primary" onclick="nextQuestion()" id="nextBtn">
+                <span class="material-icons-round">skip_next</span> Next Question
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="answer-stats-card">
+          <h3><span class="material-icons-round">bar_chart</span> Live Responses (<span id="responseCount">0</span> / <span id="totalParticipants">0</span>)</h3>
+          <div id="answerBars" class="answer-bars"></div>
+        </div>
+      </div>
+
+      <div class="live-sidebar">
+        <div class="sidebar-card">
+          <h3><span class="material-icons-round">groups</span> Participants (<span id="liveParticipantCount">0</span>)</h3>
+          <div id="liveParticipantsList" class="participants-list-compact"></div>
+        </div>
+
+        <div class="sidebar-card cheat-card" id="cheatSidebarCard">
+          <h3><span class="material-icons-round">security</span> Anti-Cheat Alerts</h3>
+          <div id="cheatAlerts" class="cheat-alerts">
+            <div class="no-alerts">
+              <span class="material-icons-round">verified_user</span>
+              <span>No violations detected</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results Screen -->
+  <div id="resultsScreen" class="live-container hidden">
+    <div class="results-card">
+      <div class="results-header">
+        <span class="material-icons-round results-icon">emoji_events</span>
+        <h1>Quiz Results (Host Only)</h1>
+        <p id="resultsQuizTitle" class="subtitle"></p>
+      </div>
+      <div id="resultsTable" class="results-table-wrapper"></div>
+      <div class="results-actions">
+        <button class="btn btn-outline" onclick="downloadResults()">
+          <span class="material-icons-round">download</span> Download CSV
+        </button>
+        <a href="/host.html" class="btn btn-primary">
+          <span class="material-icons-round">home</span> Back to Dashboard
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const quizId = params.get('quizId');
+    let sessionCode = params.get('code');
+    let hostToken = null;
+    let lastCheatId = null;
+    let pollTimer = null;
+    let lastRenderedQ = -1;
+
+    async function initSession() {
+      // Check if resuming existing session in sessionStorage
+      if (sessionCode) {
+        const stored = JSON.parse(sessionStorage.getItem(`hostSession:${sessionCode}`) || '{}');
+        if (stored.hostToken) hostToken = stored.hostToken;
+      }
+
+      if (!sessionCode || !hostToken) {
+        if (!quizId) {
+          window.location.href = '/host.html';
+          return;
+        }
+        try {
+          const res = await fetch('/api/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quizId })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Failed to start session');
+
+          sessionCode = data.code;
+          hostToken = data.hostToken;
+          sessionStorage.setItem(`hostSession:${sessionCode}`, JSON.stringify(data));
+          window.history.replaceState({}, '', `/live.html?code=${sessionCode}`);
+        } catch (err) {
+          alert(err.message);
+          window.location.href = '/host.html';
+          return;
+        }
+      }
+
+      document.getElementById('sessionCode').textContent = sessionCode;
+      document.getElementById('navCode').textContent = `#${sessionCode}`;
+      document.getElementById('joinUrlText').textContent = `${window.location.host}/join.html`;
+
+      // Load QR code
+      try {
+        const qrRes = await fetch(`/api/session/${sessionCode}/qr`);
+        const qr = await qrRes.json();
+        document.getElementById('qrCode').innerHTML = `<img src="${qr.qr}" alt="QR Code">`;
+      } catch (e) {
+        document.getElementById('qrCode').innerHTML = '<p>QR unavailable</p>';
+      }
+
+      pollHostState();
+      pollTimer = setInterval(pollHostState, 1000);
+    }
+
+    async function pollHostState() {
+      if (!sessionCode || !hostToken) return;
+      try {
+        const res = await fetch(`/api/session/${sessionCode}/host-state?hostToken=${encodeURIComponent(hostToken)}`);
+        if (!res.ok) return;
+        const state = await res.json();
+
+        document.getElementById('quizTitleDisplay').textContent = state.quizTitle;
+        document.getElementById('qTotal').textContent = state.totalQuestions;
+        document.title = `LIVE (${sessionCode}): ${state.quizTitle}`;
+
+        // Update participant counts
+        document.getElementById('participantCount').textContent = state.participantCount;
+        document.getElementById('liveParticipantCount').textContent = state.participantCount;
+        document.getElementById('totalParticipants').textContent = state.participantCount;
+        document.getElementById('startBtn').disabled = state.participantCount === 0;
+
+        renderParticipants(state.participants);
+        renderCheatAlerts(state.cheatLog);
+
+        if (state.status === 'ended') {
+          clearInterval(pollTimer);
+          showView('resultsScreen');
+          loadResults();
+          return;
+        }
+
+        if (state.status === 'waiting') {
+          showView('waitingRoom');
+          return;
+        }
+
+        // Active quiz
+        showView('liveControl');
+        if (state.question) {
+          if (lastRenderedQ !== state.currentQuestionIndex) {
+            lastRenderedQ = state.currentQuestionIndex;
+            renderQuestion(state);
+          }
+          document.getElementById('timerDisplay').textContent = state.questionRevealed ? state.timeLeft : '🔒';
+          document.getElementById('lockBtn').disabled = !state.questionRevealed;
+          document.getElementById('responseCount').textContent = state.responseCount;
+          updateAnswerBars(state.answerCounts, state.responseCount);
+        }
+      } catch (e) {
+        // retry next tick
+      }
+    }
+
+    function showView(id) {
+      ['waitingRoom', 'liveControl', 'resultsScreen'].forEach(v => {
+        document.getElementById(v).classList.toggle('hidden', v !== id);
+      });
+    }
+
+    function renderParticipants(list) {
+      document.getElementById('participantsList').innerHTML = list.length
+        ? list.map(p => `<span class="participant-chip"><span class="material-icons-round">person</span> ${escapeHtml(p.name)}</span>`).join('')
+        : '<p class="no-participants">Waiting for participants to join...</p>';
+
+      document.getElementById('liveParticipantsList').innerHTML = list.map(p => `
+        <div class="participant-row ${p.cheats > 0 ? 'flagged' : ''}">
+          <span class="material-icons-round">person</span>
+          <span class="p-name">${escapeHtml(p.name)}</span>
+          ${p.cheats > 0 ? `<span class="cheat-count" title="${p.cheats} cheat alerts">⚠ ${p.cheats}</span>` : ''}
+          ${p.answeredCurrent ? '<span class="material-icons-round answered-icon" title="Answered">check_circle</span>' : ''}
+          <button class="btn-icon danger" style="width:26px;height:26px;" title="Remove participant" onclick="kickParticipant('${p.id}', '${escapeHtml(p.name)}')">
+            <span class="material-icons-round" style="font-size:16px;">person_remove</span>
+          </button>
+        </div>
+      `).join('');
+    }
+
+    function renderQuestion(state) {
+      const q = state.question;
+      document.getElementById('qNum').textContent = state.currentQuestionIndex + 1;
+      document.getElementById('questionText').textContent = q.text;
+      document.getElementById('progressFill').style.width = `${((state.currentQuestionIndex + 1) / state.totalQuestions) * 100}%`;
+
+      document.getElementById('optionsDisplay').innerHTML = q.options.map((opt, i) => opt ? `
+        <div class="option-display ${i === q.correctIndex ? 'correct-option' : ''}">
+          <span class="opt-letter">${'ABCD'[i]}</span>
+          <span>${escapeHtml(opt)}</span>
+          ${i === q.correctIndex ? '<span class="material-icons-round correct-mark">check_circle</span>' : ''}
+        </div>
+      ` : '').join('');
+
+      document.getElementById('answerBars').innerHTML = q.options.map((opt, i) => opt ? `
+        <div class="answer-bar-row">
+          <span class="bar-label">${'ABCD'[i]}</span>
+          <div class="bar-track">
+            <div class="bar-fill bar-color-${i}" id="bar-${i}" style="width: 0%"></div>
+          </div>
+          <span class="bar-count" id="bar-count-${i}">0</span>
+        </div>
+      ` : '').join('');
+
+      document.getElementById('nextBtn').innerHTML = (state.currentQuestionIndex + 1 >= state.totalQuestions)
+        ? '<span class="material-icons-round">flag</span> Finish Quiz'
+        : '<span class="material-icons-round">skip_next</span> Next Question';
+    }
+
+    function updateAnswerBars(counts, totalResp) {
+      const denom = Math.max(totalResp, 1);
+      for (let i = 0; i < 4; i++) {
+        const count = counts[i] || 0;
+        const bar = document.getElementById(`bar-${i}`);
+        const countEl = document.getElementById(`bar-count-${i}`);
+        if (bar) bar.style.width = `${(count / denom) * 100}%`;
+        if (countEl) countEl.textContent = count;
+      }
+    }
+
+    function renderCheatAlerts(cheatLog) {
+      if (!cheatLog || cheatLog.length === 0) return;
+      const latest = cheatLog[0];
+      if (latest && latest.id !== lastCheatId) {
+        if (lastCheatId !== null) {
+          showToast(`⚠ CHEAT ALERT: ${latest.participantName} (${formatCheatType(latest.type)})`, 'warning');
+        }
+        lastCheatId = latest.id;
+      }
+
+      document.getElementById('cheatAlerts').innerHTML = cheatLog.map(c => `
+        <div class="cheat-alert-item">
+          <span class="material-icons-round cheat-type-icon">${getCheatIcon(c.type)}</span>
+          <div class="cheat-info">
+            <strong>${escapeHtml(c.participantName)}</strong>
+            <span>${formatCheatType(c.type)}</span>
+          </div>
+          <span class="cheat-time">${new Date(c.time).toLocaleTimeString()}</span>
+        </div>
+      `).join('');
+    }
+
+    async function nextQuestion() {
+      await fetch(`/api/session/${sessionCode}/next`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostToken })
+      });
+      pollHostState();
+    }
+
+    async function lockQuestion() {
+      await fetch(`/api/session/${sessionCode}/lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostToken })
+      });
+      showToast('Answers locked for this question');
+      pollHostState();
+    }
+
+    async function kickParticipant(participantId, name) {
+      if (!confirm(`Remove "${name}" from this quiz?`)) return;
+      await fetch(`/api/session/${sessionCode}/kick`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostToken, participantId, reason: 'Removed by host due to anti-cheat violation' })
+      });
+      showToast(`${name} removed`);
+      pollHostState();
+    }
+
+    async function endSession() {
+      if (!confirm('End this quiz session now?')) return;
+      await fetch(`/api/session/${sessionCode}/end`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostToken })
+      });
+      pollHostState();
+    }
+
+    async function loadResults() {
+      try {
+        const res = await fetch(`/api/session/${sessionCode}/results?hostToken=${encodeURIComponent(hostToken)}`);
+        const data = await res.json();
+        document.getElementById('resultsQuizTitle').textContent = data.quiz;
+
+        if (!data.results || !data.results.length) {
+          document.getElementById('resultsTable').innerHTML = '<p style="text-align:center;color:var(--text-secondary);">No participants recorded.</p>';
+          return;
+        }
+
+        document.getElementById('resultsTable').innerHTML = `
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Participant</th>
+                <th>Score</th>
+                <th>Accuracy</th>
+                <th>Anti-Cheat</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.results.map((r, i) => `
+                <tr class="${r.cheats.length > 0 ? 'flagged-row' : ''}">
+                  <td class="rank-cell">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
+                  <td><strong>${escapeHtml(r.name)}</strong> ${r.kicked ? '<span class="cheat-badge">Removed</span>' : ''}</td>
+                  <td>${r.correct} / ${r.total}</td>
+                  <td>
+                    <div class="score-bar-mini">
+                      <div class="score-fill" style="width: ${r.percentage}%"></div>
+                      <span>${r.percentage}%</span>
+                    </div>
+                  </td>
+                  <td class="${r.cheats.length > 0 ? 'cheat-cell' : ''}">
+                    ${r.cheats.length > 0 ? `<span class="cheat-badge">⚠ ${r.cheats.length} alerts</span>` : '✓ Clean'}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (e) {
+        document.getElementById('resultsTable').innerHTML = '<p>Failed to load results.</p>';
+      }
+    }
+
+    function downloadResults() {
+      fetch(`/api/session/${sessionCode}/results?hostToken=${encodeURIComponent(hostToken)}`)
+        .then(r => r.json())
+        .then(data => {
+          let csv = 'Rank,Name,Correct,Total,Percentage,Cheats,Status\n';
+          data.results.forEach((r, i) => {
+            csv += `${i + 1},"${r.name.replace(/"/g, '""')}",${r.correct},${r.total},${r.percentage}%,${r.cheats.length},${r.kicked ? 'Removed' : 'Completed'}\n`;
+          });
+          const blob = new Blob([csv], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `${data.quiz}-results.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+    }
+
+    function formatCheatType(type) {
+      const map = {
+        'tab-switch': 'Switched Tab / Minimized',
+        'right-click': 'Right-Click Attempted',
+        'copy-paste': 'Copy/Paste Attempted',
+        'devtools': 'DevTools Attempted',
+        'visibility': 'Window Lost Focus'
+      };
+      return map[type] || type;
+    }
+
+    function getCheatIcon(type) {
+      const map = {
+        'tab-switch': 'tab_unselected',
+        'right-click': 'mouse',
+        'copy-paste': 'content_paste',
+        'devtools': 'code',
+        'visibility': 'visibility_off'
+      };
+      return map[type] || 'warning';
+    }
+
+    function showToast(msg, type = 'success') {
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.textContent = msg;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.classList.add('show'), 10);
+      setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 3200);
+    }
+
+    function escapeHtml(text) {
+      const d = document.createElement('div');
+      d.textContent = text;
+      return d.innerHTML;
+    }
+
+    initSession();
+  </script>
+</body>
+</html>

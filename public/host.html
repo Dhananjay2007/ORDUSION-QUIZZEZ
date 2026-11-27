@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Host Dashboard - ORDUSION-QUIZZEZ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="page-host">
+  <nav class="top-bar">
+    <a href="/" class="logo">
+      <span class="logo-icon material-icons-round">quiz</span>
+      <span class="logo-text">ORDUSION<span class="logo-accent">-QUIZZEZ</span></span>
+    </a>
+    <div class="nav-actions">
+      <a href="/join.html" class="nav-link">Join as Player</a>
+      <span class="host-pill"><span class="material-icons-round">verified_user</span> Host Mode</span>
+    </div>
+  </nav>
+
+  <div class="dashboard-container">
+    <div class="dashboard-header">
+      <div>
+        <h1>Your Quizzes</h1>
+        <p class="subtitle">Create multiple quizzes, import questions, and launch live anti-cheat sessions</p>
+      </div>
+      <button class="btn btn-primary" onclick="showCreateModal()">
+        <span class="material-icons-round">add</span>
+        New Quiz
+      </button>
+    </div>
+
+    <div id="quizList" class="quiz-grid">
+      <div class="empty-state" id="emptyState">
+        <span class="material-icons-round">lightbulb</span>
+        <h3>No quizzes yet</h3>
+        <p>Create your first quiz to get started!</p>
+        <button class="btn btn-primary" onclick="showCreateModal()">
+          <span class="material-icons-round">add</span>
+          Create Quiz
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Quiz Modal -->
+  <div class="modal-overlay hidden" id="createModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Create New Quiz</h2>
+        <button class="btn-icon" onclick="hideCreateModal()">
+          <span class="material-icons-round">close</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="quizTitle">Quiz Title</label>
+          <input type="text" id="quizTitle" placeholder="e.g., Computer Science Midterm" maxlength="100">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="hideCreateModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="createQuiz()">
+          <span class="material-icons-round">arrow_forward</span>
+          Create &amp; Add Questions
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let quizzes = [];
+
+    async function loadQuizzes() {
+      const res = await fetch('/api/quizzes');
+      quizzes = await res.json();
+      renderQuizzes();
+    }
+
+    function renderQuizzes() {
+      const list = document.getElementById('quizList');
+      const empty = document.getElementById('emptyState');
+
+      if (!quizzes || quizzes.length === 0) {
+        list.innerHTML = '';
+        list.appendChild(empty);
+        empty.classList.remove('hidden');
+        return;
+      }
+
+      list.innerHTML = quizzes.map(q => `
+        <div class="quiz-card">
+          <div class="quiz-card-header">
+            <div class="quiz-card-icon-wrap">
+              <span class="material-icons-round quiz-card-icon">description</span>
+            </div>
+            <div class="quiz-card-actions">
+              <button class="btn-icon danger" title="Delete Quiz" onclick="deleteQuiz('${q.id}')">
+                <span class="material-icons-round">delete</span>
+              </button>
+            </div>
+          </div>
+          <h3 class="quiz-card-title">${escapeHtml(q.title)}</h3>
+          <div class="quiz-card-meta">
+            <span><span class="material-icons-round">help_outline</span> ${q.questions.length} question${q.questions.length !== 1 ? 's' : ''}</span>
+            <span><span class="material-icons-round">schedule</span> ${new Date(q.createdAt).toLocaleDateString()}</span>
+          </div>
+          <div class="quiz-card-footer">
+            <a href="/editor.html?id=${q.id}" class="btn btn-outline btn-sm">
+              <span class="material-icons-round">edit</span> Edit Questions
+            </a>
+            <button class="btn btn-primary btn-sm" onclick="startSession('${q.id}')" ${q.questions.length === 0 ? 'disabled title="Add questions first"' : ''}>
+              <span class="material-icons-round">play_arrow</span> Go Live
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function showCreateModal() {
+      document.getElementById('createModal').classList.remove('hidden');
+      document.getElementById('quizTitle').focus();
+    }
+
+    function hideCreateModal() {
+      document.getElementById('createModal').classList.add('hidden');
+      document.getElementById('quizTitle').value = '';
+      document.getElementById('quizTitle').classList.remove('input-error');
+    }
+
+    async function createQuiz() {
+      const titleEl = document.getElementById('quizTitle');
+      const title = titleEl.value.trim();
+      if (!title) {
+        titleEl.classList.add('input-error');
+        return;
+      }
+
+      const res = await fetch('/api/quiz', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      });
+      const quiz = await res.json();
+      hideCreateModal();
+      window.location.href = `/editor.html?id=${quiz.id}`;
+    }
+
+    async function deleteQuiz(id) {
+      if (!confirm('Delete this quiz? This cannot be undone.')) return;
+      await fetch(`/api/quiz/${id}`, { method: 'DELETE' });
+      loadQuizzes();
+    }
+
+    function startSession(quizId) {
+      window.location.href = `/live.html?quizId=${quizId}`;
+    }
+
+    function escapeHtml(text) {
+      const d = document.createElement('div');
+      d.textContent = text;
+      return d.innerHTML;
+    }
+
+    document.getElementById('quizTitle').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') createQuiz();
+    });
+
+    loadQuizzes();
+  </script>
+</body>
+</html>

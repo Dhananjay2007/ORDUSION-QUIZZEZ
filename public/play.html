@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Play Quiz - ORDUSION-QUIZZEZ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="page-play">
+  <nav class="top-bar play-bar">
+    <div class="logo">
+      <span class="logo-icon material-icons-round">quiz</span>
+      <span class="logo-text">ORDUSION<span class="logo-accent">-QUIZZEZ</span></span>
+    </div>
+    <div class="play-info">
+      <span class="shield-pill">
+        <span class="material-icons-round">shield</span> Anti-Cheat On
+      </span>
+      <span id="playerNameDisplay" class="player-name-badge">Player</span>
+    </div>
+  </nav>
+
+  <!-- Waiting for Host -->
+  <div id="waitingScreen" class="play-container">
+    <div class="play-waiting-card">
+      <div class="waiting-animation">
+        <div class="pulse-ring"></div>
+        <span class="material-icons-round waiting-icon">hourglass_top</span>
+      </div>
+      <h1>You're In!</h1>
+      <p id="waitingQuizTitle" class="subtitle">Waiting for the host to start...</p>
+      <div class="rules-box">
+        <div class="rule-item"><span class="material-icons-round">tab_unselected</span> Do not switch tabs or minimize</div>
+        <div class="rule-item"><span class="material-icons-round">content_copy</span> Copy, paste &amp; right-click are disabled</div>
+        <div class="rule-item"><span class="material-icons-round">visibility_off</span> Answers are never shown</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Question Display -->
+  <div id="questionScreen" class="play-container hidden">
+    <div class="play-question-card">
+      <div class="play-progress">
+        <span>Question <strong id="playQNum">0</strong> of <strong id="playQTotal">0</strong></span>
+        <div class="play-timer" id="playTimer">
+          <span class="material-icons-round">timer</span>
+          <span id="playTimerText">--</span>s
+        </div>
+      </div>
+      <div class="timer-bar-track">
+        <div class="timer-bar-fill" id="timerBarFill"></div>
+      </div>
+
+      <h2 id="playQuestionText" class="play-question-text">-</h2>
+
+      <div id="playOptions" class="play-options"></div>
+
+      <div id="answerStatus" class="answer-status hidden">
+        <span class="material-icons-round">check_circle</span>
+        <span>Answer submitted! Waiting for host to advance...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Locked Screen -->
+  <div id="lockedScreen" class="play-container hidden">
+    <div class="play-waiting-card">
+      <span class="material-icons-round locked-icon">lock</span>
+      <h2>Answers Locked</h2>
+      <p>The host has locked this question. Waiting for the next question...</p>
+    </div>
+  </div>
+
+  <!-- Quiz Ended -->
+  <div id="endedScreen" class="play-container hidden">
+    <div class="play-waiting-card ended">
+      <span class="material-icons-round ended-icon">emoji_events</span>
+      <h1>Quiz Complete!</h1>
+      <p>Thank you for participating.</p>
+      <p class="hint">Results are private and visible only to the host.</p>
+      <a href="/" class="btn btn-primary" style="margin-top: 20px;">
+        <span class="material-icons-round">home</span>
+        Back to Home
+      </a>
+    </div>
+  </div>
+
+  <!-- Kicked Screen -->
+  <div id="kickedScreen" class="play-container hidden">
+    <div class="play-waiting-card kicked">
+      <span class="material-icons-round kicked-icon">block</span>
+      <h1>Removed from Quiz</h1>
+      <p id="kickReason">The host removed you from this session.</p>
+      <a href="/" class="btn btn-outline" style="margin-top: 20px;">
+        <span class="material-icons-round">home</span>
+        Back to Home
+      </a>
+    </div>
+  </div>
+
+  <!-- Anti-Cheat Warning Overlay -->
+  <div id="cheatWarning" class="cheat-overlay hidden">
+    <div class="cheat-warning-card">
+      <span class="material-icons-round">gpp_bad</span>
+      <h2>Anti-Cheat Alert!</h2>
+      <p id="cheatMessage">Suspicious activity detected. The host has been alerted.</p>
+      <button class="btn btn-danger" onclick="dismissCheatWarning()">Return to Quiz</button>
+    </div>
+  </div>
+
+  <script>
+    const code = new URLSearchParams(window.location.search).get('code');
+    const saved = JSON.parse(sessionStorage.getItem('quizParticipant') || '{}');
+
+    if (!code || !saved.participantId || saved.code !== code) {
+      window.location.href = code ? `/join.html?code=${code}` : '/join.html';
+    }
+
+    const participantId = saved.participantId;
+    document.getElementById('playerNameDisplay').textContent = saved.name || 'Player';
+    document.getElementById('waitingQuizTitle').textContent = `Quiz: ${saved.quizTitle || 'Loading...'}`;
+
+    let currentQuestionIndex = -1;
+    let currentQuestionDuration = 30;
+    let answered = false;
+    let selectedIdx = null;
+    let quizActive = false;
+    let quizEnded = false;
+    let pollTimer = null;
+    let localCountdown = null;
+    let timeLeft = 0;
+
+    async function pollState() {
+      if (quizEnded) return;
+      try {
+        const res = await fetch(`/api/session/${code}/state?participantId=${encodeURIComponent(participantId)}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            window.location.href = `/join.html?code=${code}`;
+          }
+          return;
+        }
+        const state = await res.json();
+
+        if (state.kicked || state.status === 'kicked') {
+          quizEnded = true;
+          quizActive = false;
+          clearTimers();
+          document.getElementById('kickReason').textContent = state.kickReason || 'Removed by host.';
+          showScreen('kickedScreen');
+          return;
+        }
+
+        if (state.status === 'ended') {
+          quizEnded = true;
+          quizActive = false;
+          clearTimers();
+          showScreen('endedScreen');
+          return;
+        }
+
+        if (state.status === 'waiting') {
+          quizActive = false;
+          showScreen('waitingScreen');
+          return;
+        }
+
+        // Active quiz
+        quizActive = true;
+        if (!state.questionRevealed) {
+          clearInterval(localCountdown);
+          showScreen('lockedScreen');
+          return;
+        }
+
+        if (state.question) {
+          // New question arrived
+          if (state.currentQuestionIndex !== currentQuestionIndex) {
+            currentQuestionIndex = state.currentQuestionIndex;
+            currentQuestionDuration = state.question.timer || 30;
+            answered = state.answered;
+            selectedIdx = state.selectedAnswer;
+            renderQuestion(state);
+          } else {
+            // Sync timer drift if needed
+            if (Math.abs(timeLeft - state.timeLeft) > 2) {
+              timeLeft = state.timeLeft;
+              updateTimerUI();
+            }
+          }
+          showScreen('questionScreen');
+        }
+      } catch (e) {
+        // Network glitch, will retry on next poll
+      }
+    }
+
+    function renderQuestion(state) {
+      document.getElementById('playQNum').textContent = state.currentQuestionIndex + 1;
+      document.getElementById('playQTotal').textContent = state.totalQuestions;
+      document.getElementById('playQuestionText').textContent = state.question.text;
+
+      const optColors = ['opt-blue', 'opt-red', 'opt-green', 'opt-orange'];
+      const optIcons = ['looks_one', 'looks_two', 'looks_3', 'looks_4'];
+
+      document.getElementById('playOptions').innerHTML = state.question.options.map((opt, i) => opt ? `
+        <button class="play-option-btn ${optColors[i]} ${answered && selectedIdx === i ? 'selected' : ''}"
+                onclick="selectAnswer(${i})"
+                id="opt-btn-${i}"
+                ${answered ? 'disabled' : ''}>
+          <span class="opt-icon material-icons-round">${optIcons[i]}</span>
+          <span class="opt-text">${escapeHtml(opt)}</span>
+        </button>
+      ` : '').join('');
+
+      const statusEl = document.getElementById('answerStatus');
+      if (answered) {
+        statusEl.innerHTML = '<span class="material-icons-round">check_circle</span><span>Answer submitted! Waiting for host to advance...</span>';
+        statusEl.classList.remove('hidden');
+      } else {
+        statusEl.classList.add('hidden');
+      }
+
+      timeLeft = state.timeLeft;
+      updateTimerUI();
+      clearInterval(localCountdown);
+      localCountdown = setInterval(() => {
+        if (timeLeft > 0) {
+          timeLeft--;
+          updateTimerUI();
+        }
+        if (timeLeft <= 0) {
+          clearInterval(localCountdown);
+          if (!answered) {
+            disableOptions();
+            statusEl.innerHTML = '<span class="material-icons-round">timer_off</span><span>Time\'s up! Waiting for next question...</span>';
+            statusEl.classList.remove('hidden');
+          }
+        }
+      }, 1000);
+    }
+
+    function updateTimerUI() {
+      document.getElementById('playTimerText').textContent = timeLeft;
+      const timerEl = document.getElementById('playTimer');
+      timerEl.classList.toggle('timer-urgent', timeLeft <= 5 && timeLeft > 0);
+      const pct = currentQuestionDuration > 0 ? (timeLeft / currentQuestionDuration) * 100 : 0;
+      document.getElementById('timerBarFill').style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    }
+
+    async function selectAnswer(index) {
+      if (answered || timeLeft <= 0) return;
+      answered = true;
+      selectedIdx = index;
+
+      document.querySelectorAll('.play-option-btn').forEach((btn, i) => {
+        if (i === index) btn.classList.add('selected');
+        btn.disabled = true;
+      });
+
+      const statusEl = document.getElementById('answerStatus');
+      statusEl.innerHTML = '<span class="material-icons-round">check_circle</span><span>Answer submitted! Waiting for host to advance...</span>';
+      statusEl.classList.remove('hidden');
+
+      try {
+        await fetch(`/api/session/${code}/answer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ participantId, answerIndex: index })
+        });
+      } catch (e) {
+        // Retry once if needed
+      }
+    }
+
+    function disableOptions() {
+      document.querySelectorAll('.play-option-btn').forEach(btn => { btn.disabled = true; });
+    }
+
+    function showScreen(id) {
+      ['waitingScreen', 'questionScreen', 'lockedScreen', 'endedScreen', 'kickedScreen'].forEach(s => {
+        document.getElementById(s).classList.toggle('hidden', s !== id);
+      });
+    }
+
+    function clearTimers() {
+      clearInterval(pollTimer);
+      clearInterval(localCountdown);
+    }
+
+    // ─── ANTI-CHEAT SYSTEM ───
+    let lastCheatReportAt = 0;
+
+    function reportCheat(type, detail) {
+      if (quizEnded) return;
+      const now = Date.now();
+      // Debounce identical rapid events (like blur + visibilitychange firing together)
+      if (now - lastCheatReportAt < 1200 && (type === 'visibility' || type === 'tab-switch')) return;
+      lastCheatReportAt = now;
+
+      fetch(`/api/session/${code}/cheat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ participantId, type, detail })
+      }).catch(() => {});
+    }
+
+    document.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      reportCheat('right-click', 'Right-click attempted');
+      showCheatWarning('Right-click is disabled during the quiz.');
+      return false;
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && ['c', 'v', 'x', 'a', 'u', 's', 'p'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        reportCheat('copy-paste', `Shortcut Ctrl/Cmd+${e.key.toUpperCase()}`);
+        showCheatWarning('Copy, paste, and shortcuts are disabled!');
+        return false;
+      }
+      if (e.key === 'F12' || ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'j', 'c'].includes(e.key.toLowerCase()))) {
+        e.preventDefault();
+        reportCheat('devtools', 'Developer tools shortcut attempted');
+        showCheatWarning('Developer tools are strictly prohibited!');
+        return false;
+      }
+    });
+
+    document.addEventListener('selectstart', (e) => e.preventDefault());
+    document.addEventListener('dragstart', (e) => e.preventDefault());
+    document.addEventListener('copy', (e) => { e.preventDefault(); reportCheat('copy-paste', 'Copy event blocked'); });
+    document.addEventListener('paste', (e) => { e.preventDefault(); reportCheat('copy-paste', 'Paste event blocked'); });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && !quizEnded) {
+        reportCheat('tab-switch', 'Switched tab or minimized browser');
+        showCheatWarning('Tab switching is not allowed! The host has been alerted.');
+      }
+    });
+
+    window.addEventListener('blur', () => {
+      if (!quizEnded && quizActive) {
+        reportCheat('visibility', 'Window lost focus');
+        showCheatWarning('Leaving the quiz window is not allowed! The host has been alerted.');
+      }
+    });
+
+    function showCheatWarning(message) {
+      if (quizEnded) return;
+      document.getElementById('cheatMessage').textContent = message;
+      document.getElementById('cheatWarning').classList.remove('hidden');
+    }
+
+    function dismissCheatWarning() {
+      document.getElementById('cheatWarning').classList.add('hidden');
+    }
+
+    function escapeHtml(text) {
+      const d = document.createElement('div');
+      d.textContent = text;
+      return d.innerHTML;
+    }
+
+    pollState();
+    pollTimer = setInterval(pollState, 1000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz Editor - ORDUSION-QUIZZEZ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="page-editor">
+  <nav class="top-bar">
+    <a href="/host.html" class="logo">
+      <span class="material-icons-round">arrow_back</span>
+      <span class="logo-text">Back to Dashboard</span>
+    </a>
+    <div class="nav-actions">
+      <button class="btn btn-primary" id="goLiveBtn" disabled>
+        <span class="material-icons-round">play_arrow</span>
+        Go Live
+      </button>
+    </div>
+  </nav>
+
+  <div class="editor-container">
+    <div class="editor-header">
+      <div class="editor-title-row">
+        <input type="text" id="quizTitleInput" class="title-input" placeholder="Quiz Title">
+        <button class="btn btn-outline btn-sm" onclick="saveTitle()">
+          <span class="material-icons-round">check</span> Save Title
+        </button>
+      </div>
+    </div>
+
+    <!-- Import Section -->
+    <div class="import-section">
+      <div class="import-card">
+        <h3><span class="material-icons-round">upload_file</span> Bulk Import Questions</h3>
+        <p class="subtitle" style="margin-bottom:14px;">Supported formats: <strong>.txt, .pdf, .docx, .xlsx</strong></p>
+        <div class="import-formats">
+          <div class="format-info">
+            <strong>TXT / PDF / DOCX Format</strong>
+            <pre>Q1. What is 2+2?
+A) 1
+B) 2
+C) 3
+D) 4
+Answer: D
+Timer: 30</pre>
+          </div>
+          <div class="format-info">
+            <strong>Excel (.xlsx) Columns</strong>
+            <pre>Question | Opt A | Opt B | Opt C | Opt D | Answer | Timer
+2+2=?    | 1     | 2     | 3     | 4     | D      | 30</pre>
+          </div>
+        </div>
+        <div class="import-dropzone" id="dropzone" onclick="document.getElementById('importFile').click()">
+          <input type="file" id="importFile" accept=".txt,.pdf,.docx,.doc,.xlsx,.xls" hidden>
+          <span class="material-icons-round drop-icon">cloud_upload</span>
+          <span id="fileName" class="file-name">Click or drag &amp; drop a file here (.txt, .pdf, .docx, .xlsx)</span>
+        </div>
+        <div class="import-actions" style="margin-top:12px;">
+          <button class="btn btn-primary" id="importBtn" onclick="importQuestions()" disabled>
+            <span class="material-icons-round">publish</span>
+            Import Questions
+          </button>
+        </div>
+        <div id="importStatus" class="import-status hidden"></div>
+      </div>
+    </div>
+
+    <!-- Add / Edit Question Manually -->
+    <div class="add-question-section" id="addQuestionSection">
+      <h3 id="formHeading"><span class="material-icons-round">edit_note</span> Add Question Manually</h3>
+      <div class="question-form" id="addQuestionForm">
+        <div class="form-group">
+          <label>Question Text</label>
+          <textarea id="newQuestionText" rows="2" placeholder="Type your question here..."></textarea>
+        </div>
+        <div class="options-grid">
+          <div class="form-group option-group">
+            <label>Option A</label>
+            <input type="text" id="optA" placeholder="Option A">
+          </div>
+          <div class="form-group option-group">
+            <label>Option B</label>
+            <input type="text" id="optB" placeholder="Option B">
+          </div>
+          <div class="form-group option-group">
+            <label>Option C</label>
+            <input type="text" id="optC" placeholder="Option C (optional)">
+          </div>
+          <div class="form-group option-group">
+            <label>Option D</label>
+            <input type="text" id="optD" placeholder="Option D (optional)">
+          </div>
+        </div>
+        <div class="question-settings">
+          <div class="form-group">
+            <label>Correct Answer (Hidden from participants)</label>
+            <select id="correctAnswer">
+              <option value="0">Option A</option>
+              <option value="1">Option B</option>
+              <option value="2">Option C</option>
+              <option value="3">Option D</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Timer (seconds)</label>
+            <input type="number" id="timerSecs" value="30" min="5" max="300" step="5">
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <button class="btn btn-primary" id="saveQuestionBtn" onclick="saveQuestion()">
+            <span class="material-icons-round">add</span>
+            Add Question
+          </button>
+          <button class="btn btn-ghost hidden" id="cancelEditBtn" onclick="cancelEdit()">
+            Cancel Edit
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Questions List -->
+    <div class="questions-list-section">
+      <h3><span class="material-icons-round">list</span> Questions (<span id="questionCount">0</span>)</h3>
+      <div id="questionsList" class="questions-list"></div>
+    </div>
+  </div>
+
+  <script>
+    const quizId = new URLSearchParams(window.location.search).get('id');
+    let quiz = null;
+    let editingIndex = null;
+
+    async function loadQuiz() {
+      if (!quizId) { window.location.href = '/host.html'; return; }
+      const res = await fetch(`/api/quiz/${quizId}`);
+      if (!res.ok) { window.location.href = '/host.html'; return; }
+      quiz = await res.json();
+      document.getElementById('quizTitleInput').value = quiz.title;
+      document.title = `${quiz.title} - Editor`;
+      renderQuestions();
+      updateGoLive();
+    }
+
+    function renderQuestions() {
+      const list = document.getElementById('questionsList');
+      document.getElementById('questionCount').textContent = quiz.questions.length;
+
+      if (quiz.questions.length === 0) {
+        list.innerHTML = '<div class="empty-state small"><span class="material-icons-round">help_outline</span><p>No questions yet. Add manually or import from a file.</p></div>';
+        return;
+      }
+
+      list.innerHTML = quiz.questions.map((q, i) => `
+        <div class="question-item" data-index="${i}">
+          <div class="question-item-header">
+            <span class="question-num">${i + 1}</span>
+            <span class="question-text">${escapeHtml(q.text)}</span>
+            <div class="question-item-actions">
+              <span class="timer-badge"><span class="material-icons-round">timer</span> ${q.timer}s</span>
+              <button class="btn-icon" title="Edit" onclick="editQuestion(${i})">
+                <span class="material-icons-round">edit</span>
+              </button>
+              <button class="btn-icon danger" title="Delete" onclick="deleteQuestion(${i})">
+                <span class="material-icons-round">delete</span>
+              </button>
+            </div>
+          </div>
+          <div class="question-options-preview">
+            ${q.options.map((opt, oi) => opt ? `
+              <span class="opt-preview ${oi === q.correctIndex ? 'correct' : ''}">${'ABCD'[oi]}) ${escapeHtml(opt)}</span>
+            ` : '').join('')}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function saveTitle() {
+      const title = document.getElementById('quizTitleInput').value.trim();
+      if (!title) return;
+      await fetch(`/api/quiz/${quizId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      });
+      quiz.title = title;
+      document.title = `${title} - Editor`;
+      showToast('Quiz title saved!');
+    }
+
+    async function saveQuestion() {
+      const text = document.getElementById('newQuestionText').value.trim();
+      const options = [
+        document.getElementById('optA').value.trim(),
+        document.getElementById('optB').value.trim(),
+        document.getElementById('optC').value.trim(),
+        document.getElementById('optD').value.trim()
+      ];
+      const correctIndex = parseInt(document.getElementById('correctAnswer').value, 10);
+      const timer = Math.max(5, parseInt(document.getElementById('timerSecs').value, 10) || 30);
+
+      if (!text) { showToast('Please enter question text', 'error'); return; }
+      if (options.filter(Boolean).length < 2) { showToast('At least 2 options required', 'error'); return; }
+      if (!options[correctIndex]) { showToast('Selected correct option cannot be empty', 'error'); return; }
+
+      if (editingIndex !== null) {
+        quiz.questions[editingIndex] = {
+          ...quiz.questions[editingIndex],
+          text, options, correctIndex, timer
+        };
+        editingIndex = null;
+        showToast('Question updated!');
+      } else {
+        quiz.questions.push({
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+          text, options, correctIndex, timer
+        });
+        showToast('Question added!');
+      }
+
+      await persistQuestions();
+      resetForm();
+    }
+
+    function editQuestion(index) {
+      const q = quiz.questions[index];
+      editingIndex = index;
+      document.getElementById('newQuestionText').value = q.text;
+      document.getElementById('optA').value = q.options[0] || '';
+      document.getElementById('optB').value = q.options[1] || '';
+      document.getElementById('optC').value = q.options[2] || '';
+      document.getElementById('optD').value = q.options[3] || '';
+      document.getElementById('correctAnswer').value = q.correctIndex;
+      document.getElementById('timerSecs').value = q.timer;
+
+      document.getElementById('formHeading').innerHTML = `<span class="material-icons-round">edit</span> Editing Question ${index + 1}`;
+      document.getElementById('saveQuestionBtn').innerHTML = '<span class="material-icons-round">save</span> Update Question';
+      document.getElementById('cancelEditBtn').classList.remove('hidden');
+
+      window.scrollTo({ top: document.getElementById('addQuestionSection').offsetTop - 80, behavior: 'smooth' });
+    }
+
+    function cancelEdit() {
+      editingIndex = null;
+      resetForm();
+    }
+
+    function resetForm() {
+      document.getElementById('newQuestionText').value = '';
+      ['optA', 'optB', 'optC', 'optD'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('correctAnswer').value = '0';
+      document.getElementById('timerSecs').value = '30';
+      document.getElementById('formHeading').innerHTML = '<span class="material-icons-round">edit_note</span> Add Question Manually';
+      document.getElementById('saveQuestionBtn').innerHTML = '<span class="material-icons-round">add</span> Add Question';
+      document.getElementById('cancelEditBtn').classList.add('hidden');
+    }
+
+    async function deleteQuestion(index) {
+      if (!confirm(`Delete question ${index + 1}?`)) return;
+      quiz.questions.splice(index, 1);
+      if (editingIndex === index) cancelEdit();
+      await persistQuestions();
+      showToast('Question deleted');
+    }
+
+    async function persistQuestions() {
+      await fetch(`/api/quiz/${quizId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questions: quiz.questions })
+      });
+      renderQuestions();
+      updateGoLive();
+    }
+
+    // Drag & drop + file input
+    const fileInput = document.getElementById('importFile');
+    const dropzone = document.getElementById('dropzone');
+
+    fileInput.addEventListener('change', () => updateFileSelection(fileInput.files[0]));
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer.files[0]) {
+        fileInput.files = e.dataTransfer.files;
+        updateFileSelection(e.dataTransfer.files[0]);
+      }
+    });
+
+    function updateFileSelection(file) {
+      document.getElementById('fileName').textContent = file ? `Selected: ${file.name}` : 'Click or drag & drop a file here (.txt, .pdf, .docx, .xlsx)';
+      document.getElementById('importBtn').disabled = !file;
+    }
+
+    async function importQuestions() {
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      const statusEl = document.getElementById('importStatus');
+      statusEl.classList.remove('hidden');
+      statusEl.className = 'import-status loading';
+      statusEl.textContent = 'Parsing and importing questions...';
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch(`/api/quiz/${quizId}/import`, { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+
+        statusEl.className = 'import-status success';
+        statusEl.textContent = `✓ Imported ${data.imported} questions! Total: ${data.total}`;
+        fileInput.value = '';
+        updateFileSelection(null);
+        await loadQuiz();
+      } catch (err) {
+        statusEl.className = 'import-status error';
+        statusEl.textContent = '✗ ' + err.message;
+      }
+    }
+
+    function updateGoLive() {
+      const btn = document.getElementById('goLiveBtn');
+      btn.disabled = quiz.questions.length === 0;
+      btn.onclick = () => { window.location.href = `/live.html?quizId=${quizId}`; };
+    }
+
+    function showToast(msg, type = 'success') {
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.textContent = msg;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.classList.add('show'), 10);
+      setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 2500);
+    }
+
+    function escapeHtml(text) {
+      const d = document.createElement('div');
+      d.textContent = text;
+      return d.innerHTML;
+    }
+
+    loadQuiz();
+  </script>
+</body>
+</html>

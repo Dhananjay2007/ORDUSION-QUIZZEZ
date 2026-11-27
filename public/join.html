@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Join Quiz - ORDUSION-QUIZZEZ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="page-join">
+  <nav class="top-bar">
+    <a href="/" class="logo">
+      <span class="logo-icon material-icons-round">quiz</span>
+      <span class="logo-text">ORDUSION<span class="logo-accent">-QUIZZEZ</span></span>
+    </a>
+    <a href="/host.html" class="btn btn-ghost btn-sm">
+      <span class="material-icons-round">dashboard</span>
+      Host Login
+    </a>
+  </nav>
+
+  <div class="join-container">
+    <div class="join-card">
+      <div class="join-header">
+        <div class="join-icon-badge">
+          <span class="material-icons-round">login</span>
+        </div>
+        <h1>Join a Quiz</h1>
+        <p>Enter your name and the 6-digit code from your host</p>
+      </div>
+
+      <form id="joinForm" class="join-form">
+        <div class="form-group">
+          <label for="playerName">Your Full Name</label>
+          <div class="input-wrapper">
+            <span class="material-icons-round input-icon">person</span>
+            <input type="text" id="playerName" placeholder="e.g., Alex Johnson" required maxlength="30" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="sessionCode">6-Digit Quiz Code</label>
+          <div class="input-wrapper">
+            <span class="material-icons-round input-icon">pin</span>
+            <input type="text" id="sessionCode" placeholder="000000" required maxlength="6" pattern="[0-9]{6}" inputmode="numeric" autocomplete="off" class="code-input">
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-lg btn-block" id="joinBtn">
+          <span class="material-icons-round">arrow_forward</span>
+          Join Session
+        </button>
+
+        <div id="joinError" class="error-msg hidden"></div>
+        <div id="joinSuccess" class="success-msg hidden"></div>
+      </form>
+
+      <div class="join-divider">
+        <span>or scan QR code</span>
+      </div>
+
+      <div class="scan-hint">
+        <span class="material-icons-round">qr_code_scanner</span>
+        <p>Point your phone camera at the QR code on the host's screen to auto-fill the code.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('joinForm');
+    const errorEl = document.getElementById('joinError');
+    const successEl = document.getElementById('joinSuccess');
+    const joinBtn = document.getElementById('joinBtn');
+    const codeInput = document.getElementById('sessionCode');
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const codeFromUrl = urlParams.get('code');
+    if (codeFromUrl) {
+      codeInput.value = codeFromUrl.replace(/\D/g, '').slice(0, 6);
+      document.getElementById('playerName').focus();
+    }
+
+    codeInput.addEventListener('input', function () {
+      this.value = this.value.replace(/\D/g, '').slice(0, 6);
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('playerName').value.trim();
+      const code = codeInput.value.trim();
+
+      if (!name || code.length !== 6) {
+        showError('Please enter your name and a valid 6-digit code');
+        return;
+      }
+
+      joinBtn.disabled = true;
+      joinBtn.innerHTML = '<span class="spinner"></span> Joining...';
+      errorEl.classList.add('hidden');
+
+      try {
+        const res = await fetch(`/api/session/${code}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not join session');
+
+        sessionStorage.setItem('quizParticipant', JSON.stringify(data));
+        successEl.textContent = `Joined "${data.quizTitle}" as ${data.name}!`;
+        successEl.classList.remove('hidden');
+
+        setTimeout(() => {
+          window.location.href = `/play.html?code=${data.code}`;
+        }, 500);
+      } catch (err) {
+        showError(err.message);
+        joinBtn.disabled = false;
+        joinBtn.innerHTML = '<span class="material-icons-round">arrow_forward</span> Join Session';
+      }
+    });
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.classList.remove('hidden');
+      errorEl.classList.add('shake');
+      setTimeout(() => errorEl.classList.remove('shake'), 500);
+    }
+  </script>
+</body>
+</html>
